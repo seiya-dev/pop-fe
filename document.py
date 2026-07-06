@@ -36,8 +36,8 @@ pgd_hdr = bytes([0x00, 0x50, 0x47, 0x44, 0x01, 0x00, 0x00, 0x00,
 ### BBOX minimal implementation for encrypted PS1 DOCUMENT.DAT ###
 
 class BBoxException(Exception):
-    def __init__(message: str = ''):
-        super().__init__(message or f'BBox Error')
+    def __init__(self, message: str = '') -> None:
+        super().__init__(message or 'BBox Error')
 
 def _raise(msg: str) -> None:
     raise BBoxException(msg)
@@ -241,9 +241,12 @@ def decrypt_document(data, directory):
         print('Unknown mismatch')
         os._exit(1)
     
-    print('Game ID:', msg[0x0C:0x1C].decode().rstrip('\0'))
+    print('Game ID:', msg[0x0C:0x1C].decode("ascii", errors="replace").rstrip('\0'))
     
     big_flag = struct.unpack_from('<I', msg, 0x1C)[0]
+    if big_flag not in (0, 1):
+        raise ValueError(f"Invalid big flag: {big_flag}")
+    
     info_block_size = 0x1f3e8 if big_flag else 0x31e8
     
     # INFO Block
@@ -280,8 +283,8 @@ def decrypt_document(data, directory):
     for i in range(psp_image_count):
         psp_o = struct.unpack_from('<I', msg, 0x08 + i * 0x80)[0]
         psp_l = struct.unpack_from('<I', msg, 0x08 + i * 0x80 + 0x0C)[0]
-        ps3_o = struct.unpack_from('<I', msg, 0x08 + i * 0x80 + 0x10)[0]
-        ps3_l = struct.unpack_from('<I', msg, 0x08 + i * 0x80 + 0x1C)[0]
+        # ps3_o = struct.unpack_from('<I', msg, 0x08 + i * 0x80 + 0x10)[0]
+        # ps3_l = struct.unpack_from('<I', msg, 0x08 + i * 0x80 + 0x1C)[0]
         
         offset = psp_o
         length = psp_l
@@ -325,12 +328,12 @@ def decrypt_document(data, directory):
         needle_idx = page_buf.rfind(needle_buf)
         
         if needle_idx == -1:
-            print(f'Page {page_index+1:03d}: PNG trailer not found')
+            print(f'Page {i+1:03d}: PNG trailer not found')
             continue
         
         png_size = needle_idx + len(needle_buf)
         if png_size < 0x43:
-            print(f'Page {page_index+1:03d}: PNG too small or trailer found too early (size={png_size})')
+            print(f'Page {i+1:03d}: PNG too small or trailer found too early (size={png_size})')
             continue
         
         with open('%s/%03d.png' % (directory, i+1), 'wb') as f:
@@ -343,7 +346,6 @@ def encrypt_document(f, gameid, pages):
         struct.pack_into('<I', buf, 0x04, 0x10000)
         struct.pack_into('<I', buf, 0x08, 0x10000)
         buf[0x0C:0x1C] = gameid.encode('ascii')[:0x0F].ljust(0x10, b'\x00')
-        struct.pack_into('<I', buf, 0x1c, 0)
         struct.pack_into('<I', buf, 0x1c, 0 if len(pages) < 100 else 1)
         return buf
     
@@ -433,8 +435,7 @@ def view_document(document, page):
         buf = i.read(136)
         
         if struct.unpack_from('<I', buf, 0)[0] != 0x20434F44:
-            print('Not a Decrypted PS1 DOCUMENT.DAT file')
-            exit
+            raise ValueError("Not a Decrypted PS1 DOCUMENT.DAT file")
         
         num_pages = struct.unpack_from('<I', buf, 132)[0]
         print('Num pages:', num_pages)
@@ -455,11 +456,12 @@ def extract_document(document, output):
         buf = i.read(136)
         
         if struct.unpack_from('<I', buf, 0)[0] != 0x20434F44:
-            print('Not a Decrypted PS1 DOCUMENT.DAT file')
-            exit
+            raise ValueError("Not a Decrypted PS1 DOCUMENT.DAT file")
         
         num_pages = struct.unpack_from('<I', buf, 132)[0]
         print('Num pages:', num_pages)
+        
+        Path(output).mkdir(parents=True, exist_ok=True)
         
         for page in range(num_pages):
             print(f'Extracting {page+1:03d} to {output}/{page+1:03d}.png')
@@ -470,12 +472,12 @@ def extract_document(document, output):
             size_low = struct.unpack_from('<I', buf, 12)[0]
             i.seek(offset_low)
             
-            with open(output + '/%03d.png' % page + 1, 'wb') as o:
+            with open(os.path.join(output, f'{page + 1:03d}.png'), 'wb') as o:
                 o.write(i.read(size_low))
 
-def create_document_from_dir(gameid, dir, doc):
+def create_document_from_dir(gameid, directory, doc):
     pages = []
-    for png in sorted(Path(dir).iterdir()):
+    for png in sorted(Path(directory).glob("*.png")):
         image = Image.open(png)
         image.thumbnail((480, 480), Image.Resampling.LANCZOS)
         f = io.BytesIO()
